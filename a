@@ -582,6 +582,12 @@ class XMProfileFields extends Component {
             };
             this.setup(fallbackConfig);
         }
+        
+        // Initialize state tracking for form modifications
+        this.setState({
+            hasLocalChanges: false,
+            lastUpdateTimestamp: null
+        });
     }
 
     componentDidUpdate(prevProps) {
@@ -859,8 +865,64 @@ class XMProfileFields extends Component {
         }
     };
 
-    getCurrentFormData = () => {
-        return this.props.data || {};
+    handleFormDataUpdate = (updatedFormData) => {
+        // Reconstruct the complete form data with proper structure preservation
+        let completeFormData = cloneObject(this.props.data || {});
+        
+        // Merge the updated form data while preserving the existing structure
+        if (Array.isArray(updatedFormData)) {
+            updatedFormData.forEach(section => {
+                if (section.column && Array.isArray(section.column)) {
+                    section.column.forEach(field => {
+                        if (field.bind && field.value !== undefined) {
+                            // Update the field value in the complete data structure
+                            this.updateFieldInFormData(completeFormData, field.bind, field.value, field.source);
+                        }
+                    });
+                }
+            });
+        }
+        
+        // Ensure proper data structure initialization
+        this.initializeProfileData(completeFormData);
+        
+        // Trigger parent component update to ensure state persistence
+        if (this.props.onCustFormUpdate) {
+            this.props.onCustFormUpdate(completeFormData);
+        }
+        
+        // Update local state to maintain consistency
+        this.setState({ 
+            hasLocalChanges: true,
+            lastUpdateTimestamp: Date.now() 
+        });
+    };
+
+    updateFieldInFormData = (formData, fieldBinding, fieldValue, fieldSource = 'USER') => {
+        // Handle nested object path updates with proper metadata structure
+        const pathParts = fieldBinding.split('.');
+        let currentObject = formData;
+        
+        // Navigate to the parent object
+        for (let i = 0; i < pathParts.length - 1; i++) {
+            if (!currentObject[pathParts[i]]) {
+                currentObject[pathParts[i]] = {};
+            }
+            currentObject = currentObject[pathParts[i]];
+        }
+        
+        const finalKey = pathParts[pathParts.length - 1];
+        
+        // Update with proper metadata structure when applicable
+        if (fieldSource && fieldSource !== 'SYSTEM') {
+            currentObject[finalKey] = {
+                source: fieldSource,
+                sourceId: this.props.userInfo?.username || 'system',
+                value: fieldValue
+            };
+        } else {
+            currentObject[finalKey] = fieldValue;
+        }
     };
 
     render() {
@@ -910,12 +972,13 @@ class XMProfileFields extends Component {
                                         <FormBuilder
                                             data={data}
                                             onFormUpdate={(updatedData) => {
+                                                // Ensure both local and parent state are updated
                                                 if (onFormUpdate) {
                                                     onFormUpdate(updatedData);
                                                 }
-                                                if (onCustFormUpdate) {
-                                                    onCustFormUpdate(updatedData);
-                                                }
+                                                
+                                                // Trigger comprehensive state update similar to delete operations
+                                                this.handleFormDataUpdate(updatedData);
                                             }}
                                             bindedEvents={bindedEvents}
                                             permissions={permissions}
