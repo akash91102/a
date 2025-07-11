@@ -134,10 +134,21 @@ class XMProfileFields extends Component {
     getCurrentMasterAgreements = () => {
         const data = this.props.data || {};
         const bind = 'compositeProfile.legalAgreement.attributes.masterAgreements';
-        return traverseObjectAndReturn({obj: data, string: bind}) || [];
+        const result = traverseObjectAndReturn({obj: data, string: bind});
+        
+        // Handle both metadata structure and direct array
+        if (result && result.value && Array.isArray(result.value)) {
+            return result.value;
+        } else if (Array.isArray(result)) {
+            return result;
+        }
+        return [];
     };
 
     updateMasterAgreements = (newAgreements, callback = null) => {
+        // Ensure newAgreements is always an array
+        const agreementsArray = Array.isArray(newAgreements) ? newAgreements : [];
+        
         let formData = cloneObject(this.props.data || {});
         this.initializeProfileData(formData);
         
@@ -154,7 +165,15 @@ class XMProfileFields extends Component {
 
         // Update the masterAgreements with proper metadata structure
         let masterAgreementsObj = traverseObjectAndReturn({obj: formData, string: prop});
-        masterAgreementsObj.value = [...newAgreements];
+        if (!masterAgreementsObj) {
+            masterAgreementsObj = {
+                source: 'USER',
+                sourceId: this.props.userInfo?.username || 'system',
+                value: []
+            };
+        }
+        
+        masterAgreementsObj.value = [...agreementsArray];
         masterAgreementsObj.source = 'USER';
         masterAgreementsObj.sourceId = this.props.userInfo?.username || 'system';
 
@@ -170,7 +189,7 @@ class XMProfileFields extends Component {
         }
 
         if (this.gridApiRefs["masterAgreements"]) {
-            this.gridApiRefs["masterAgreements"].setRowData([...newAgreements]);
+            this.gridApiRefs["masterAgreements"].setRowData([...agreementsArray]);
         }
 
         if (callback) callback();
@@ -384,52 +403,92 @@ class XMProfileFields extends Component {
             };
         }
 
-        // Group agreements by line of business and entity
-        const groupedAgreements = {};
-        masterAgreements.forEach(agreement => {
-            const key = `${agreement.eci}_${agreement.legalEntityId}`;
-            if (!groupedAgreements[key]) {
-                groupedAgreements[key] = {
-                    eci: agreement.eci,
-                    legalEntityId: agreement.legalEntityId,
-                    legalEntity: agreement.legalEntity,
-                    agreements: {}
-                };
-            }
-            
-            if (!groupedAgreements[key].agreements[agreement.lineOfBusiness]) {
-                groupedAgreements[key].agreements[agreement.lineOfBusiness] = [];
-            }
-            
-            groupedAgreements[key].agreements[agreement.lineOfBusiness].push({
-                profileId: agreement.agreementId,
-                lineOfBusiness: agreement.lineOfBusiness,
-                profileType: agreement.profileType,
-                profileStatus: agreement.status,
-                version: agreement.version || 1,
-                createdBy: agreement.createdBy,
-                updatedBy: agreement.updatedBy,
-                createdDtm: agreement.createdAt,
-                updatedDtm: agreement.updatedAt
-            });
-        });
+        // Ensure masterAgreements is a valid array
+        const validAgreements = Array.isArray(masterAgreements) ? masterAgreements : [];
 
-        // Rebuild the crossMarginEntities structure
-        crossMarginEntities.value = Object.values(groupedAgreements).map(group => ({
-            counterParty: {
-                role: "COUNTERPARTY",
-                eci: group.eci,
-                name: group.legalEntity
-            },
-            legalEntities: [{
-                legalEntity: {
-                    role: "LEGAL_OWNER",
+        if (validAgreements.length === 0) {
+            // If no agreements, maintain empty structure but preserve metadata
+            crossMarginEntities.value = [];
+        } else {
+            // Group agreements by entity identifier
+            const groupedAgreements = {};
+            validAgreements.forEach(agreement => {
+                const entityKey = `${agreement.eci || 'unknown'}_${agreement.legalEntityId || 'unknown'}`;
+                if (!groupedAgreements[entityKey]) {
+                    groupedAgreements[entityKey] = {
+                        eci: agreement.eci || '',
+                        legalEntityId: agreement.legalEntityId || '',
+                        legalEntity: agreement.legalEntity || '',
+                        ucn: agreement.ucn || '',
+                        spn: agreement.spn || '',
+                        agreements: {}
+                    };
+                }
+                
+                const lobKey = agreement.lineOfBusiness || 'UNKNOWN';
+                if (!groupedAgreements[entityKey].agreements[lobKey]) {
+                    groupedAgreements[entityKey].agreements[lobKey] = [];
+                }
+                
+                groupedAgreements[entityKey].agreements[lobKey].push({
+                    profileId: agreement.agreementId,
+                    lineOfBusiness: agreement.lineOfBusiness,
+                    profileType: agreement.profileType,
+                    profileStatus: agreement.status,
+                    version: agreement.version || 1,
+                    createdBy: agreement.createdBy,
+                    updatedBy: agreement.updatedBy,
+                    createdDtm: agreement.createdAt,
+                    updatedDtm: agreement.updatedAt,
+                    attributes: null,
+                    approvedDtm: null,
+                    approvedBy: null,
+                    comments: null,
+                    activationDtm: null
+                });
+            });
+
+            // Rebuild the crossMarginEntities structure
+            crossMarginEntities.value = Object.values(groupedAgreements).map(group => ({
+                counterParty: {
+                    role: "COUNTERPARTY",
                     eci: group.eci,
-                    name: group.legalEntity
+                    ucn: group.ucn,
+                    spn: group.spn,
+                    name: group.legalEntity,
+                    lei: null,
+                    sapLeCode: null,
+                    principalLei: null,
+                    principalEci: null,
+                    cbd: null,
+                    leCode: null,
+                    goldenEntityEci: null,
+                    goldenEntityName: null
                 },
-                legalAgreementProfiles: group.agreements
-            }]
-        }));
+                legalEntities: [{
+                    legalEntity: {
+                        role: "LEGAL_OWNER",
+                        eci: group.eci,
+                        ucn: group.ucn,
+                        spn: group.spn,
+                        name: group.legalEntity,
+                        lei: null,
+                        sapLeCode: null,
+                        principalLei: null,
+                        principalEci: null,
+                        cbd: null,
+                        leCode: null,
+                        goldenEntityEci: null,
+                        goldenEntityName: null
+                    },
+                    legalAgreementProfiles: group.agreements
+                }]
+            }));
+        }
+
+        // Update the crossMarginEntities with proper metadata preservation
+        crossMarginEntities.source = 'USER';
+        crossMarginEntities.sourceId = this.props.userInfo?.username || 'system';
 
         traverseObjectAndInsert({
             obj: formData,
@@ -528,15 +587,19 @@ class XMProfileFields extends Component {
     componentDidUpdate(prevProps) {
         if (prevProps.data !== this.props.data && this.props.data) {
             const newMasterAgreements = this.getCurrentMasterAgreements();
+            const validNewAgreements = Array.isArray(newMasterAgreements) ? newMasterAgreements : [];
             
-            if (JSON.stringify(newMasterAgreements) !== JSON.stringify(this.state.masterAgreements)) {
+            // Safely compare arrays by ensuring both are arrays
+            const currentStateAgreements = Array.isArray(this.state.masterAgreements) ? this.state.masterAgreements : [];
+            
+            if (JSON.stringify(validNewAgreements) !== JSON.stringify(currentStateAgreements)) {
                 this.setState({
-                    masterAgreements: [...newMasterAgreements],
+                    masterAgreements: [...validNewAgreements],
                     hasLocalChanges: false
                 });
                 
                 if (this.gridApiRefs["masterAgreements"]) {
-                    this.gridApiRefs["masterAgreements"].setRowData([...newMasterAgreements]);
+                    this.gridApiRefs["masterAgreements"].setRowData([...validNewAgreements]);
                 }
             }
         }
@@ -663,8 +726,9 @@ class XMProfileFields extends Component {
             api.addEventListener('cellDoubleClicked', this.onCellDoubleClicked);
             
             const masterAgreements = this.getCurrentMasterAgreements();
-            if (masterAgreements.length > 0) {
-                api.setRowData([...masterAgreements]);
+            const validMasterAgreements = Array.isArray(masterAgreements) ? masterAgreements : [];
+            if (validMasterAgreements.length > 0) {
+                api.setRowData([...validMasterAgreements]);
             }
         }
     };
@@ -710,7 +774,9 @@ class XMProfileFields extends Component {
         }
 
         const currentAgreements = this.getCurrentMasterAgreements();
-        const updatedAgreements = currentAgreements.filter(agreement =>
+        const validCurrentAgreements = Array.isArray(currentAgreements) ? currentAgreements : [];
+        
+        const updatedAgreements = validCurrentAgreements.filter(agreement =>
             !selectedRows.some(selectedRow =>
                 JSON.stringify(agreement) === JSON.stringify(selectedRow)
             )
