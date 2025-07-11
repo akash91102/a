@@ -1,0 +1,1042 @@
+import moment from "moment";
+import React, { Component } from "react";
+import autoBind from "react-autobind";
+import { connect } from "react-redux";
+import { bindActionCreators } from "redux";
+import { 
+    configSetup, 
+    newFormBind, 
+    tableEntryUpdate,
+    formBind 
+} from "../../../../../../javascript/config";
+import { fetchConfig } from "./config/config";
+import API from '../../../api';
+
+import {
+    objectExists,
+    traverseFormToBindValue,
+    cloneObject,
+    traverseObjectAndReturn,
+    traverseObject,
+    traverseObjectAndInsert,
+    updateObjectWithMatchingKeys,
+    Debouncer
+} from "../../../../../../javascript/utility";
+
+import { mixinCheckGlobalConditions, mixinIsFormValid, mixinToggleModal } from "../../../../../../javascript/mixins";
+
+import { Spinner, Dialog, DialogContent, DialogActions, Button, Icon } from "@jpmuitk/components";
+import { DataGrid } from "@jpmuitk/data-grid";
+
+import Buttons from "../../../../../Common/Buttons/Buttons";
+import FormBuilder from "../../../../../Common/FormBuilder";
+import Header from "../../../../../Common/Header/Header";
+import AddOnProduct from "../../../../../Common/AddOnProduct/AddOnProduct";
+
+import * as appStateAction from "../../../../../../actions/appStateAction";
+import { isReadWrite } from "../../../../../../javascript/entitlementUtils";
+import { MessageBox } from "../../../../../Common/messagebox";
+
+const debounce = new Debouncer();
+let selectedRowIdx = null;
+let editingRowData = null;
+let isEditMode = false;
+let filteredData = null;
+
+class XMProfileFields extends Component {
+    constructor(props) {
+        super(props);
+
+        this.gridApiRefs = {};
+
+        this.state = {
+            permissions: {
+                readonly: this.getPermission(props),
+            },
+            config: null,
+            toggleState: true,
+            ready: true,
+            selectedRows: [], 
+            modal: {
+                disabled: null,
+                show: false,
+                header: {},
+                formdata: null,
+                onUpdate: () => { },
+                onSave: () => { },
+            },
+            resetFormFields: {
+                resetIfSelected: [{ field: "frequency", value: "*" }],
+                resetExclude: ["frequency"],
+            },
+        };
+
+        this.bindedEvents = {
+            CREATE_NEW_MASTER_AGREEMENT: () => {
+                this.openMasterAgreementModal(false);
+            },
+            DELETE_SELECTED_MASTER_AGREEMENTS: () => {
+                this.deleteSelectedRows();
+            },
+            VALIDATE_ECI_ON_BLUR: () => {
+                this.validateEciOnBlur();
+            },
+            VALIDATE_TIER_ON_BLUR: () => {
+                this.validateTierOnBlur();
+            },
+            VALIDATE_HOUSE_MULTIPLIER_ON_BLUR: () => {
+                this.validateHouseMultiplierOnBlur();
+            },
+            HANDLE_MASTER_AGREEMENT_UPDATE: (agreementData) => {
+                this.handleMasterAgreementUpdate(agreementData);
+            }
+        };
+
+        autoBind(this);
+
+        this.buttons = this.state.permissions.readonly
+            ? [
+                {
+                    title: "Back",
+                    onclick: this.props.onBack || this.props.onCancel,
+                },
+                { title: "Cancel", onclick: this.props.onCancel },
+            ]
+            : [
+                {
+                    title: "Back",
+                    onclick: this.props.onBack || this.props.onCancel,
+                },
+                { title: "Cancel", onclick: this.props.onCancel },
+                {
+                    title: "Save Draft",
+                    onclick: this.props.onSave,
+                    displayIf: this.isProfileNewOrActive.bind(this),
+                },
+                {
+                    title: "Submit",
+                    onclick: this.handleSubmit,
+                    displayIf: this.isProfileNewOrActive.bind(this),
+                },
+                {
+                    title: "Deactivate",
+                    onclick: this.props.onDeactivate,
+                    displayIf: this.isProfileActive.bind(this),
+                },
+                {
+                    title: "Activate",
+                    onclick: this.props.onActivate,
+                    displayIf: this.isProfileInactive.bind(this),
+                },
+            ];
+    }
+
+    getCurrentMasterAgreements = () => {
+        const data = this.props.data || {};
+        const bind = 'compositeProfile.legalAgreement.attributes.masterAgreements';
+        const result = traverseObjectAndReturn({obj: data, string: bind});
+        
+        // Handle both metadata structure and direct array
+        if (result && result.value && Array.isArray(result.value)) {
+            return result.value;
+        } else if (Array.isArray(result)) {
+            return result;
+        }
+        return [];
+    };
+
+    updateMasterAgreements = (newAgreements, callback = null) => {
+        // Ensure newAgreements is always an array
+        const agreementsArray = Array.isArray(newAgreements) ? newAgreements : [];
+        
+        let formData = cloneObject(this.props.data || {});
+        this.initializeProfileData(formData);
+        
+        const prop = 'compositeProfile.legalAgreement.attributes.masterAgreements';
+        
+        // Ensure the path exists
+        if (traverseObjectAndReturn({obj: formData, string: prop}) === null) {
+            traverseObject({obj: formData, string: prop, insertAtEnd: {
+                source: 'USER',
+                sourceId: this.props.userInfo?.username || 'system',
+                value: []
+            }});
+        }
+
+        // Update the masterAgreements with proper metadata structure
+        let masterAgreementsObj = traverseObjectAndReturn({obj: formData, string: prop});
+        if (!masterAgreementsObj) {
+            masterAgreementsObj = {
+                source: 'USER',
+                sourceId: this.props.userInfo?.username || 'system',
+                value: []
+            };
+        }
+        
+        masterAgreementsObj.value = [...agreementsArray];
+        masterAgreementsObj.source = 'USER';
+        masterAgreementsObj.sourceId = this.props.userInfo?.username || 'system';
+
+        traverseObjectAndInsert({
+            obj: formData, 
+            string: prop, 
+            bindOn: 'masterAgreements', 
+            newValues: masterAgreementsObj
+        });
+
+        if (this.props.onCustFormUpdate) {
+            this.props.onCustFormUpdate(formData);
+        }
+
+        if (this.gridApiRefs["masterAgreements"]) {
+            this.gridApiRefs["masterAgreements"].setRowData([...agreementsArray]);
+        }
+
+        if (callback) callback();
+    };
+
+    openMasterAgreementModal = (editMode = false) => {
+        const data = this.props.data || {};
+        let newEntry = null;
+
+        selectedRowIdx = null;
+        editingRowData = null;
+        isEditMode = editMode;
+
+        if (editMode) {
+            const { selectedRows } = this.state;
+            if (selectedRows.length === 0) {
+                MessageBox.info('No Selection', 'Please select a row to edit.');
+                return;
+            }
+            if (selectedRows.length > 1) {
+                MessageBox.info('Multiple Selection', 'Please select only one row to edit.');
+                return;
+            }
+            editingRowData = selectedRows[0];
+        }
+
+        let formData = newFormBind({ formdata: this.state.config.create.newMasterAgreements });
+
+        if (editMode && editingRowData) {
+            formData = this.prepopulateFormData(formData, editingRowData);
+        }
+
+        this.toggleModal({
+            state: true,
+            header: { title: editMode ? 'Edit Master Agreement' : 'Add New Master Agreement' },
+            formdata: formData,
+            onUpdate: (newdata) => {
+                newEntry = tableEntryUpdate({ newdata, markSource: true });
+            },
+            onSave: async () => {
+                this.setState({ resetTable: true }, async () => {
+                    try {
+                        // Validate required fields
+                        const validationData = {
+                            lineOfBusiness: newEntry.lineOfBusiness?.value || '',
+                            agreementId: newEntry.agreementId?.value || '',
+                            profileType: newEntry.agreementType?.value || '',
+                            legalEntityId: newEntry.legalEntityId?.value || '',
+                            legalEntity: newEntry.legalEntity?.value || ''
+                        };
+
+                        if (!validationData.agreementId || !validationData.lineOfBusiness || !validationData.legalEntityId) {
+                            MessageBox.error('Validation Error', 'Please fill in all required fields before saving.', 500);
+                            this.setState({ resetTable: false });
+                            return;
+                        }
+
+                        this.setState({ modal: { ...this.state.modal, disabled: true } });
+
+                        // API validation
+                        try {
+                            const validationResult = await API.validateMasterAgreement(
+                                validationData, 
+                                this.props.appState?.lob?.toUpperCase() || 'XM'
+                            );
+                            
+                            this.setState({ modal: { ...this.state.modal, disabled: false } });
+
+                            if (!validationResult.success) {
+                                MessageBox.error(
+                                    'Validation Failed', 
+                                    validationResult.reason || 'The master agreement data could not be validated.', 
+                                    500
+                                );
+                                this.setState({ resetTable: false });
+                                return;
+                            }
+                        } catch (apiError) {
+                            console.warn('API validation failed, proceeding anyway:', apiError);
+                            this.setState({ modal: { ...this.state.modal, disabled: false } });
+                        }
+
+                        // Check for duplicates
+                        let exists = false;
+                        const currentAgreements = this.getCurrentMasterAgreements();
+
+                        if (currentAgreements) {
+                            currentAgreements.forEach((item) => {
+                                if (item.agreementId === newEntry.agreementId?.value) {
+                                    if (!isEditMode || (isEditMode && JSON.stringify(item) !== JSON.stringify(editingRowData))) {
+                                        exists = true;
+                                        MessageBox.error('Validation Error', 'Agreement ID already exists. Please enter a unique Agreement ID.', 500);
+                                    }
+                                }
+                            });
+                        }
+
+                        if (!exists) {
+                            let updatedAgreements = [...currentAgreements];
+
+                            if (isEditMode) {
+                                // Update existing agreement
+                                const updatedAgreement = {
+                                    ...editingRowData,
+                                    lineOfBusiness: newEntry.lineOfBusiness?.value || '',
+                                    agreementId: newEntry.agreementId?.value || '',
+                                    profileType: newEntry.agreementType?.value || '',
+                                    legalEntityId: newEntry.legalEntityId?.value || '',
+                                    legalEntity: newEntry.legalEntity?.value || '',
+                                    eci: newEntry.eci?.value || '',
+                                    updatedAt: moment().format("YYYY-MM-DD HH:mm:ss.SSS"),
+                                    updatedBy: this.props.userInfo?.username || 'system'
+                                };
+
+                                const agreementIndex = updatedAgreements.findIndex(item =>
+                                    JSON.stringify(item) === JSON.stringify(editingRowData)
+                                );
+
+                                if (agreementIndex !== -1) {
+                                    updatedAgreements[agreementIndex] = updatedAgreement;
+                                }
+
+                                MessageBox.alert('Success', 'Master agreement has been updated successfully.', 500);
+                            } else {
+                                // Add new agreement
+                                const newAgreement = {
+                                    lineOfBusiness: newEntry.lineOfBusiness?.value || '',
+                                    agreementId: newEntry.agreementId?.value || '',
+                                    profileType: newEntry.agreementType?.value || '',
+                                    legalEntityId: newEntry.legalEntityId?.value || '',
+                                    legalEntity: newEntry.legalEntity?.value || '',
+                                    eci: newEntry.eci?.value || '',
+                                    status: newEntry.status?.value || 'LIVE',
+                                    createdAt: moment().format("YYYY-MM-DD HH:mm:ss.SSS"),
+                                    updatedAt: moment().format("YYYY-MM-DD HH:mm:ss.SSS"),
+                                    createdBy: this.props.userInfo?.username || 'system',
+                                    updatedBy: this.props.userInfo?.username || 'system'
+                                };
+
+                                updatedAgreements.push(newAgreement);
+                                MessageBox.alert('Success', 'Master agreement has been validated and added successfully.', 500);
+                            }
+
+                            this.toggleModal({ state: false });
+
+                            this.updateMasterAgreements(updatedAgreements, () => {
+                                this.setState({ resetTable: false, selectedRows: [] });
+                                this.rebuildCrossMarginEntities(updatedAgreements);
+                            });
+                        } else {
+                            this.setState({ resetTable: false });
+                        }
+
+                    } catch (error) {
+                        console.error('Error in master agreement save:', error);
+                        MessageBox.error('System Error', 'An unexpected error occurred during validation. Please try again.', 500);
+                        this.setState({
+                            resetTable: false,
+                            modal: { ...this.state.modal, disabled: false }
+                        });
+                    }
+                });
+            }
+        });
+    };
+
+    prepopulateFormData = (formData, rowData) => {
+        let populatedFormData = cloneObject(formData);
+
+        if (populatedFormData.data && populatedFormData.data[0] && populatedFormData.data[0].column) {
+            populatedFormData.data[0].column.forEach(field => {
+                switch (field.bind) {
+                    case 'lineOfBusiness':
+                        field.value = rowData.lineOfBusiness || '';
+                        break;
+                    case 'agreementId':
+                        field.value = rowData.agreementId || '';
+                        break;
+                    case 'agreementType':
+                        field.value = rowData.profileType || '';
+                        break;
+                    case 'legalEntityId':
+                        field.value = rowData.legalEntityId || '';
+                        break;
+                    case 'legalEntity':
+                        field.value = rowData.legalEntity || '';
+                        break;
+                    case 'eci':
+                        field.value = rowData.eci || '';
+                        break;
+                    default:
+                        break;
+                }
+            });
+        }
+
+        return populatedFormData;
+    };
+
+    rebuildCrossMarginEntities = (masterAgreements) => {
+        // Rebuild the original crossMarginEntities structure from the flattened masterAgreements
+        let formData = cloneObject(this.props.data || {});
+        const crossMarginEntitiesPath = 'compositeProfile.legalAgreement.attributes.crossMarginEntities';
+        
+        let crossMarginEntities = traverseObjectAndReturn({obj: formData, string: crossMarginEntitiesPath});
+        if (!crossMarginEntities) {
+            crossMarginEntities = {
+                source: 'USER',
+                sourceId: this.props.userInfo?.username || 'system',
+                value: []
+            };
+        }
+
+        // Group agreements by line of business and entity
+        const groupedAgreements = {};
+        masterAgreements.forEach(agreement => {
+            const key = `${agreement.eci}_${agreement.legalEntityId}`;
+            if (!groupedAgreements[key]) {
+                groupedAgreements[key] = {
+                    eci: agreement.eci,
+                    legalEntityId: agreement.legalEntityId,
+                    legalEntity: agreement.legalEntity,
+                    agreements: {}
+                };
+            }
+            
+            if (!groupedAgreements[key].agreements[agreement.lineOfBusiness]) {
+                groupedAgreements[key].agreements[agreement.lineOfBusiness] = [];
+            }
+            
+            groupedAgreements[key].agreements[agreement.lineOfBusiness].push({
+                profileId: agreement.agreementId,
+                lineOfBusiness: agreement.lineOfBusiness,
+                profileType: agreement.profileType,
+                profileStatus: agreement.status,
+                version: agreement.version || 1,
+                createdBy: agreement.createdBy,
+                updatedBy: agreement.updatedBy,
+                createdDtm: agreement.createdAt,
+                updatedDtm: agreement.updatedAt
+            });
+        });
+
+        // Rebuild the crossMarginEntities structure
+        crossMarginEntities.value = Object.values(groupedAgreements).map(group => ({
+            counterParty: {
+                role: "COUNTERPARTY",
+                eci: group.eci,
+                name: group.legalEntity
+            },
+            legalEntities: [{
+                legalEntity: {
+                    role: "LEGAL_OWNER",
+                    eci: group.eci,
+                    name: group.legalEntity
+                },
+                legalAgreementProfiles: group.agreements
+            }]
+        }));
+
+        traverseObjectAndInsert({
+            obj: formData,
+            string: crossMarginEntitiesPath,
+            bindOn: 'crossMarginEntities',
+            newValues: crossMarginEntities
+        });
+
+        if (this.props.onCustFormUpdate) {
+            this.props.onCustFormUpdate(formData);
+        }
+    };
+
+    handleMasterAgreementUpdate = (agreementData) => {
+        debounce.add(null, async () => {
+            // Handle updates to master agreement data with proper validation
+            if (!agreementData || !agreementData.agreementId) {
+                return;
+            }
+
+            try {
+                // Validate the agreement data through API
+                const validationResult = await API.validateMasterAgreement(
+                    agreementData, 
+                    this.props.appState?.lob?.toUpperCase() || 'XM'
+                );
+
+                if (validationResult.success) {
+                    const currentAgreements = this.getCurrentMasterAgreements();
+                    const updatedAgreements = currentAgreements.map(agreement => 
+                        agreement.agreementId === agreementData.agreementId ? agreementData : agreement
+                    );
+                    
+                    this.updateMasterAgreements(updatedAgreements);
+                } else {
+                    MessageBox.error('Validation Failed', validationResult.reason || 'Agreement validation failed.', 500);
+                }
+            } catch (error) {
+                console.warn('Master agreement update validation failed:', error);
+            }
+        }, 600);
+    };
+
+    getPermission(props) {
+        const profileReadOnly = props.data?.profileReadOnly || false;
+        const userHasWriteAccess = isReadWrite(props.userInfo, "ROLE_AGENCY_UI_READ_WRITE");
+        return profileReadOnly || !userHasWriteAccess;
+    }
+
+    isProfileNewOrActive() {
+        const data = this.props.data || {};
+        const profilePresent = objectExists(data, "compositeProfile.legalAgreement.profileStatus");
+        const status = data.compositeProfile?.legalAgreement?.profileStatus;
+        return !profilePresent || status === "LIVE" || status === "NEW";
+    }
+
+    isProfileActive() {
+        const data = this.props.data || {};
+        const profilePresent = objectExists(data, "compositeProfile.legalAgreement.profileStatus");
+        const status = data.compositeProfile?.legalAgreement?.profileStatus;
+        return profilePresent && status === "LIVE";
+    }
+
+    isProfileInactive() {
+        const data = this.props.data || {};
+        const profilePresent = objectExists(data, "compositeProfile.legalAgreement.profileStatus");
+        const status = data.compositeProfile?.legalAgreement?.profileStatus;
+        return profilePresent && status === "INACTIVE";
+    }
+
+    componentDidMount() {
+        try {
+            const config = fetchConfig(this.props.appState?.lob || "xm");
+            this.setup(config);
+        } catch (error) {
+            console.error('Failed to fetch config:', error);
+            const fallbackConfig = {
+                layout: [
+                    {
+                        refKey: "agreement",
+                        header: { title: "XM Profile Information" },
+                        type: "form",
+                        data: [],
+                    },
+                ],
+                create: {
+                    newMasterAgreements: {
+                        data: [{ column: [] }]
+                    }
+                }
+            };
+            this.setup(fallbackConfig);
+        }
+    }
+
+    componentDidUpdate(prevProps) {
+        if (prevProps.data !== this.props.data && this.props.data) {
+            const newMasterAgreements = this.getCurrentMasterAgreements();
+            const validNewAgreements = Array.isArray(newMasterAgreements) ? newMasterAgreements : [];
+            
+            // Safely compare arrays by ensuring both are arrays
+            const currentStateAgreements = Array.isArray(this.state.masterAgreements) ? this.state.masterAgreements : [];
+            
+            if (JSON.stringify(validNewAgreements) !== JSON.stringify(currentStateAgreements)) {
+                this.setState({
+                    masterAgreements: [...validNewAgreements],
+                    hasLocalChanges: false
+                });
+                
+                if (this.gridApiRefs["masterAgreements"]) {
+                    this.gridApiRefs["masterAgreements"].setRowData([...validNewAgreements]);
+                }
+            }
+        }
+    }
+
+    setup = (config) => {
+        let cloneData = cloneObject(this.props.data || {});
+        this.initializeProfileData(cloneData);
+
+        // Process the complex crossMarginEntities data structure and flatten it
+        this.processAndFlattenData(cloneData);
+
+        let configSetupVar = configSetup({
+            config,
+            formdata: cloneData,
+            staticData: this.props.staticData,
+            bindFunctions: this.bindedEvents,
+        });
+
+        this.setState({ config: configSetupVar });
+
+        if (this.props.onCustFormUpdate) {
+            this.props.onCustFormUpdate(cloneData);
+        }
+    };
+
+    processAndFlattenData = (data) => {
+        // Extract ECI and SPN from crossMarginEntities if available
+        if (objectExists(data, 'compositeProfile.legalAgreement.attributes.crossMarginEntities.value')) {
+            const crossMarginEntities = data.compositeProfile.legalAgreement.attributes.crossMarginEntities.value;
+            
+            if (crossMarginEntities.length > 0) {
+                const firstEntity = crossMarginEntities[0];
+                
+                // Extract counterParty information
+                if (firstEntity.counterParty) {
+                    traverseObjectAndInsert({
+                        obj: data,
+                        string: 'compositeProfile.legalAgreement.attributes.eci',
+                        bindOn: 'eci',
+                        newValues: firstEntity.counterParty.eci
+                    });
+                    
+                    traverseObjectAndInsert({
+                        obj: data,
+                        string: 'compositeProfile.legalAgreement.attributes.spn',
+                        bindOn: 'spn',
+                        newValues: firstEntity.counterParty.spn
+                    });
+                }
+
+                // Process and flatten legal agreement profiles
+                const flattenedAgreements = this.processLegalAgreementProfiles(data);
+                
+                // Store flattened agreements in the proper metadata format
+                traverseObjectAndInsert({
+                    obj: data,
+                    string: 'compositeProfile.legalAgreement.attributes.masterAgreements',
+                    bindOn: 'masterAgreements',
+                    newValues: {
+                        source: 'USER',
+                        sourceId: this.props.userInfo?.username || 'system',
+                        value: flattenedAgreements
+                    }
+                });
+            }
+        }
+    };
+
+    initializeProfileData = (data) => {
+        if (!data.compositeProfile) {
+            data.compositeProfile = {};
+        }
+
+        if (!data.compositeProfile.legalAgreement) {
+            data.compositeProfile.legalAgreement = {
+                profileId: "",
+                profileType: "",
+                version: 0,
+                updatedBy: "",
+                updatedDtm: moment().format("YYYY-MM-DD HH:mm:ss.SSS"),
+                attributes: {},
+            };
+        }
+
+        if (!data.compositeProfile.legalAgreement.attributes) {
+            data.compositeProfile.legalAgreement.attributes = {
+                agreementType: "",
+                spn: "",
+                eci: "",
+                tier: "",
+                tierVersion: "",
+                tierEffectiveDate: "",
+                addOn: '',
+                houseMultiplier: "",
+                status: "NEW",
+            };
+        }
+
+        if (typeof data.compositeProfile.legalAgreement.version === "number") {
+            data.compositeProfile.legalAgreement.version = data.compositeProfile.legalAgreement.version.toString();
+        }
+
+        // Initialize masterAgreements with proper metadata structure if it doesn't exist
+        if (!data.compositeProfile.legalAgreement.attributes.masterAgreements) {
+            data.compositeProfile.legalAgreement.attributes.masterAgreements = {
+                source: 'USER',
+                sourceId: this.props.userInfo?.username || 'system',
+                value: []
+            };
+        }
+    };
+
+    onGridReady = ({ e, refKey }) => {
+        const { api } = e;
+        this.gridApiRefs[refKey] = api;
+
+        setTimeout(() => {
+            api.sizeColumnsToFit();
+        }, 100);
+
+        if (refKey === "masterAgreements") {
+            api.addEventListener('selectionChanged', this.onSelectionChanged);
+            api.addEventListener('cellDoubleClicked', this.onCellDoubleClicked);
+            
+            const masterAgreements = this.getCurrentMasterAgreements();
+            const validMasterAgreements = Array.isArray(masterAgreements) ? masterAgreements : [];
+            if (validMasterAgreements.length > 0) {
+                api.setRowData([...validMasterAgreements]);
+            }
+        }
+    };
+
+    onCellDoubleClicked = (event) => {
+        if (!this.state.permissions.readonly) {
+            const rowData = event.data;
+            this.setState({ selectedRows: [rowData] }, () => {
+                this.openMasterAgreementModal(true);
+            });
+        }
+    };
+
+    onSelectionChanged = () => {
+        const selectedNodes = this.gridApiRefs["masterAgreements"]?.getSelectedNodes() || [];
+        const selectedRows = selectedNodes.map(node => node.data);
+        this.setState({ selectedRows });
+    };
+
+    onCellValueChanged = (event) => {
+        const { data, colDef, newValue, node } = event;
+        const field = colDef.field;
+
+        data[field] = newValue;
+        data.updatedAt = moment().format("YYYY-MM-DD HH:mm:ss.SSS");
+        data.updatedBy = this.props.userInfo?.username || 'system';
+        
+        const currentAgreements = this.getCurrentMasterAgreements();
+        const rowIndex = node.rowIndex;
+        
+        if (currentAgreements[rowIndex]) {
+            currentAgreements[rowIndex] = data;
+            this.updateMasterAgreements(currentAgreements);
+        }
+    };
+
+    deleteSelectedRows = () => {
+        const { selectedRows } = this.state;
+
+        if (selectedRows.length === 0) {
+            MessageBox.info('No Selection', 'Please select one or more rows to delete.');
+            return;
+        }
+
+        const currentAgreements = this.getCurrentMasterAgreements();
+        const validCurrentAgreements = Array.isArray(currentAgreements) ? currentAgreements : [];
+        
+        const updatedAgreements = validCurrentAgreements.filter(agreement =>
+            !selectedRows.some(selectedRow =>
+                JSON.stringify(agreement) === JSON.stringify(selectedRow)
+            )
+        );
+
+        this.updateMasterAgreements(updatedAgreements, () => {
+            this.setState({ selectedRows: [] });
+            this.rebuildCrossMarginEntities(updatedAgreements);
+        });
+    };
+
+    validateEciOnBlur = async () => {
+        // Implementation for ECI validation
+        console.log('ECI validation triggered');
+    };
+
+    validateHouseMultiplierOnBlur = () => {
+        this.validateFieldOnBlur(
+            'House Multiplier', 
+            0, 
+            100, 
+            'House Multiplier value cannot be less than 0. It has been reset to 0.', 
+            'House Multiplier value cannot be greater than 100. It has been reset to 100.'
+        );
+    };
+
+    validateTierOnBlur = () => {
+        this.validateFieldOnBlur(
+            'Tier', 
+            1, 
+            9, 
+            'Tier value cannot be less than 1. It has been reset to 1.', 
+            'Tier value cannot be greater than 9. It has been reset to 9.'
+        );
+    };
+
+    validateFieldOnBlur = (fieldTitle, minValue, maxValue, minErrorMessage, maxErrorMessage) => {
+        let clone = cloneObject(this.state.config);
+        clone.layout.find(x => x.refKey === 'crossMarginEntities').data.forEach(x => {
+            x.column.forEach(form => {
+                if (form.title === fieldTitle && form.value !== undefined) {
+                    if (form.value === "" || form.value === null || typeof form.value === "undefined") {
+                        return;
+                    }
+                    
+                    let newValue = form.value;
+                    if (newValue < minValue) {
+                        newValue = minValue;
+                        form.value = newValue;
+                        MessageBox.error('Validation Error', minErrorMessage, 500);
+                    } else if (newValue > maxValue) {
+                        newValue = maxValue;
+                        form.value = newValue;
+                        MessageBox.error('Validation Error', maxErrorMessage, 500);
+                    }
+                }
+            });
+        });
+        
+        this.setState({ config: clone, ready: false }, () => {
+            this.setState({ ready: true });
+        });
+    };
+
+    isFormValid = (props) => {
+        mixinIsFormValid({ ...props, _this: this });
+    };
+
+    toggleModal = (props) => {
+        mixinToggleModal({ ...props, _this: this });
+    };
+
+    checkGlobalConditions = (renderIf = null) => {
+        return mixinCheckGlobalConditions({ renderIf, _this: this });
+    };
+
+    handleSubmit = () => {
+        if (this.props.onSubmit) {
+            this.props.onSubmit();
+        }
+    };
+
+    getCurrentFormData = () => {
+        return this.props.data || {};
+    };
+
+    render() {
+        const {
+            buttons,
+            bindedEvents,
+            checkGlobalConditions,
+            toggleModal,
+            onGridReady,
+            isFormValid,
+        } = this;
+
+        const { ready, modal, config, permissions } = this.state;
+        const { onFormUpdate, onCustFormUpdate, staticData } = this.props;
+
+        let formData = this.props.data || {};
+
+        return (
+            <div style={{ marginTop: "10px", marginBottom: "10px" }}>
+                {!!config && ready ? (
+                    <>
+                        {config.layout.map((x, i) => {
+                            const {
+                                refKey,
+                                header,
+                                type,
+                                data,
+                                columnDefs,
+                                renderIf,
+                                bind,
+                                rowClassRules,
+                                createKey,
+                                markSource
+                            } = x;
+
+                            return checkGlobalConditions(renderIf) ? (
+                                <div className="dt-container" key={i}>
+                                    {!!header ? (
+                                        <Header
+                                            {...header}
+                                            bindedEvents={bindedEvents}
+                                            permissions={permissions}
+                                        />
+                                    ) : null}
+
+                                    {!!type && type === "form" ? (
+                                        <FormBuilder
+                                            data={data}
+                                            onFormUpdate={(updatedData) => {
+                                                if (onFormUpdate) {
+                                                    onFormUpdate(updatedData);
+                                                }
+                                                if (onCustFormUpdate) {
+                                                    onCustFormUpdate(updatedData);
+                                                }
+                                            }}
+                                            bindedEvents={bindedEvents}
+                                            permissions={permissions}
+                                            staticData={staticData}
+                                            renderComponent={(type, bind, containerIndex, formIndex) => {
+                                                if (type === 'component' && bind.includes('addOn')) {
+                                                    return (
+                                                        <AddOnProduct
+                                                            bind={bind}
+                                                            formData={formData}
+                                                            onCustFormUpdate={onCustFormUpdate}
+                                                            bindedEvents={bindedEvents}
+                                                            config={this.state.config}
+                                                        />
+                                                    );
+                                                }
+                                                return null;
+                                            }}
+                                        />
+                                    ) : null}
+
+                                    {!!type && type === "datatable" ? (
+                                        <DataGrid
+                                            suppressRowClickSelection={false}
+                                            rowSelection="multiple"
+                                            rowMultiSelectWithClick={true}
+                                            headerCheckboxSelection={true}
+                                            headerCheckboxSelectionFilteredOnly={true}
+                                            containerProps={{
+                                                style: { height: "200px" },
+                                            }}
+                                            rowStripes
+                                            columnDefs={columnDefs?.map(col => ({
+                                                ...col,
+                                                editable: false,
+                                                checkboxSelection: col.field === "lineOfBusiness" ? true : false,
+                                                headerCheckboxSelection: col.field === "lineOfBusiness" ? true : false,
+                                            }))}
+                                            rowData={traverseFormToBindValue({
+                                                formData,
+                                                bind,
+                                                filterFunction: () => true
+                                            })}
+                                            onCellValueChanged={this.onCellValueChanged}
+                                            onGridReady={(e) => {
+                                                onGridReady({ e, refKey });
+                                            }}
+                                            refKey={refKey}
+                                        />
+                                    ) : null}
+                                </div>
+                            ) : null;
+                        })}
+
+                        <Dialog
+                            onEntered={() => { }}
+                            open={modal.show}
+                            onClick={() => { }}
+                            onClose={() => { toggleModal(false) }}
+                        >
+                            <div>
+                                {!!modal.show ? (
+                                    <DialogContent>
+                                        <div className='dt-container'>
+                                            <Header {...modal.header} permissions={permissions} />
+                                            <FormBuilder
+                                                data={this.state.modal.formdata?.data || []}
+                                                onFormUpdate={modal.onUpdate}
+                                                isFormValid={isFormValid}
+                                                filteredData={filteredData}
+                                                selectedRowIdx={selectedRowIdx}
+                                                gridApi={this.gridApiRefs}
+                                                resetFormFields={this.state.resetFormFields}
+                                                permissions={permissions}
+                                                staticData={staticData}
+                                            />
+                                        </div>
+                                    </DialogContent>
+                                ) : null}
+
+                                <DialogActions>
+                                    {!permissions.readonly ? (
+                                        <Button variant={'cta'} disabled={modal.disabled} onClick={modal.onSave}>
+                                            Save
+                                        </Button>
+                                    ) : null}
+                                    <Button variant={'cta'} onClick={() => { toggleModal(false) }}>
+                                        Close
+                                    </Button>
+                                </DialogActions>
+                            </div>
+                        </Dialog>
+
+                        <Buttons data={buttons} />
+                    </>
+                ) : (
+                    <div style={{ padding: "20px", textAlign: "center" }}>
+                        <Spinner />
+                        <p>Loading XM Profile configuration...</p>
+                    </div>
+                )}
+            </div>
+        );
+    }
+
+    processLegalAgreementProfiles = (data) => {
+        let legalAgreementProfiles = [];
+        const crossMarginEntities = data?.compositeProfile?.legalAgreement?.attributes?.crossMarginEntities?.value;
+
+        if (Array.isArray(crossMarginEntities) && crossMarginEntities.length > 0) {
+            crossMarginEntities.forEach((entityItem) => {
+                const legalEntities = entityItem?.legalEntities;
+                if (Array.isArray(legalEntities) && legalEntities.length > 0) {
+                    legalEntities.forEach((entity) => {
+                        const profilesObj = entity?.legalAgreementProfiles;
+                        const legalEntity = entity?.legalEntity;
+                        
+                        if (profilesObj && typeof profilesObj === 'object') {
+                            Object.keys(profilesObj).forEach(agreementType => {
+                                const profiles = profilesObj[agreementType];
+                                if (Array.isArray(profiles)) {
+                                    profiles.forEach((profile) => {
+                                        legalAgreementProfiles.push({
+                                            agreementId: profile.profileId,
+                                            lineOfBusiness: profile.lineOfBusiness,
+                                            agreementCategory: agreementType,
+                                            profileType: profile.profileType,
+                                            legalEntityId: legalEntity?.ucn || '',
+                                            legalEntity: legalEntity?.name || profile.lineOfBusiness,
+                                            status: profile.profileStatus,
+                                            updatedBy: profile.updatedBy,
+                                            updatedAt: profile.updatedDtm,
+                                            createdBy: profile.createdBy,
+                                            createdAt: profile.createdDtm,
+                                            version: profile.version,
+                                            eci: legalEntity?.eci || '',
+                                            _originalData: profile,
+                                            _agreementType: agreementType
+                                        });
+                                    });
+                                }
+                            });
+                        }
+                    });
+                }
+            });
+        }
+
+        return legalAgreementProfiles;
+    };
+}
+
+const mapStateToProps = (state) => {
+    const { appState } = state;
+    return { appState };
+};
+
+const mapDispatchToProps = (dispatch) => {
+    return {
+        appStateAction: bindActionCreators(appStateAction, dispatch),
+    };
+};
+
+export default connect(mapStateToProps, mapDispatchToProps)(XMProfileFields);
