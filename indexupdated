@@ -75,11 +75,20 @@ class XMProfileFields extends Component {
             CREATE_NEW_MASTER_AGREEMENT: () => {
                 this.openMasterAgreementModal(false);
             },
+            EDIT_MASTER_AGREEMENT: () => {
+                this.editSelectedMasterAgreement();
+            },
             DELETE_SELECTED_MASTER_AGREEMENTS: () => {
                 this.deleteSelectedRows();
             },
             VALIDATE_ECI_ON_BLUR: () => {
                 this.validateEciOnBlur();
+            },
+            VALIDATE_SPN_ON_BLUR: () => {
+                this.validateSpnOnBlur();
+            },
+            VALIDATE_ECID_ON_BLUR: () => {
+                this.validateEcidOnBlur();
             },
             VALIDATE_TIER_ON_BLUR: () => {
                 this.validateTierOnBlur();
@@ -136,7 +145,6 @@ class XMProfileFields extends Component {
         const bind = 'compositeProfile.legalAgreement.attributes.masterAgreements';
         const result = traverseObjectAndReturn({obj: data, string: bind});
         
-        // Handle both metadata structure and direct array
         if (result && result.value && Array.isArray(result.value)) {
             return result.value;
         } else if (Array.isArray(result)) {
@@ -146,7 +154,6 @@ class XMProfileFields extends Component {
     };
 
     updateMasterAgreements = (newAgreements, callback = null) => {
-        // Ensure newAgreements is always an array
         const agreementsArray = Array.isArray(newAgreements) ? newAgreements : [];
         
         let formData = cloneObject(this.props.data || {});
@@ -154,7 +161,6 @@ class XMProfileFields extends Component {
         
         const prop = 'compositeProfile.legalAgreement.attributes.masterAgreements';
         
-        // Ensure the path exists
         if (traverseObjectAndReturn({obj: formData, string: prop}) === null) {
             traverseObject({obj: formData, string: prop, insertAtEnd: {
                 source: 'USER',
@@ -163,7 +169,6 @@ class XMProfileFields extends Component {
             }});
         }
 
-        // Update the masterAgreements with proper metadata structure
         let masterAgreementsObj = traverseObjectAndReturn({obj: formData, string: prop});
         if (!masterAgreementsObj) {
             masterAgreementsObj = {
@@ -193,6 +198,19 @@ class XMProfileFields extends Component {
         }
 
         if (callback) callback();
+    };
+
+    editSelectedMasterAgreement = () => {
+        const { selectedRows } = this.state;
+        if (selectedRows.length === 0) {
+            MessageBox.info('No Selection', 'Please select a row to edit.');
+            return;
+        }
+        if (selectedRows.length > 1) {
+            MessageBox.info('Multiple Selection', 'Please select only one row to edit.');
+            return;
+        }
+        this.openMasterAgreementModal(true);
     };
 
     openMasterAgreementModal = (editMode = false) => {
@@ -232,7 +250,6 @@ class XMProfileFields extends Component {
             onSave: async () => {
                 this.setState({ resetTable: true }, async () => {
                     try {
-                        // Validate required fields
                         const validationData = {
                             lineOfBusiness: newEntry.lineOfBusiness?.value || '',
                             agreementId: newEntry.agreementId?.value || '',
@@ -247,32 +264,8 @@ class XMProfileFields extends Component {
                             return;
                         }
 
-                        this.setState({ modal: { ...this.state.modal, disabled: true } });
+                        // Removed API validation call as requested
 
-                        // API validation
-                        try {
-                            const validationResult = await API.validateMasterAgreement(
-                                validationData, 
-                                this.props.appState?.lob?.toUpperCase() || 'XM'
-                            );
-                            
-                            this.setState({ modal: { ...this.state.modal, disabled: false } });
-
-                            if (!validationResult.success) {
-                                MessageBox.error(
-                                    'Validation Failed', 
-                                    validationResult.reason || 'The master agreement data could not be validated.', 
-                                    500
-                                );
-                                this.setState({ resetTable: false });
-                                return;
-                            }
-                        } catch (apiError) {
-                            console.warn('API validation failed, proceeding anyway:', apiError);
-                            this.setState({ modal: { ...this.state.modal, disabled: false } });
-                        }
-
-                        // Check for duplicates
                         let exists = false;
                         const currentAgreements = this.getCurrentMasterAgreements();
 
@@ -291,7 +284,6 @@ class XMProfileFields extends Component {
                             let updatedAgreements = [...currentAgreements];
 
                             if (isEditMode) {
-                                // Update existing agreement
                                 const updatedAgreement = {
                                     ...editingRowData,
                                     lineOfBusiness: newEntry.lineOfBusiness?.value || '',
@@ -314,7 +306,6 @@ class XMProfileFields extends Component {
 
                                 MessageBox.alert('Success', 'Master agreement has been updated successfully.', 500);
                             } else {
-                                // Add new agreement
                                 const newAgreement = {
                                     lineOfBusiness: newEntry.lineOfBusiness?.value || '',
                                     agreementId: newEntry.agreementId?.value || '',
@@ -330,7 +321,7 @@ class XMProfileFields extends Component {
                                 };
 
                                 updatedAgreements.push(newAgreement);
-                                MessageBox.alert('Success', 'Master agreement has been validated and added successfully.', 500);
+                                MessageBox.alert('Success', 'Master agreement has been added successfully.', 500);
                             }
 
                             this.toggleModal({ state: false });
@@ -344,8 +335,7 @@ class XMProfileFields extends Component {
                         }
 
                     } catch (error) {
-                        console.error('Error in master agreement save:', error);
-                        MessageBox.error('System Error', 'An unexpected error occurred during validation. Please try again.', 500);
+                        MessageBox.error('System Error', 'An unexpected error occurred. Please try again.', 500);
                         this.setState({
                             resetTable: false,
                             modal: { ...this.state.modal, disabled: false }
@@ -390,7 +380,7 @@ class XMProfileFields extends Component {
     };
 
     rebuildCrossMarginEntities = (masterAgreements) => {
-        // Rebuild the original crossMarginEntities structure from the flattened masterAgreements
+        
         let formData = cloneObject(this.props.data || {});
         const crossMarginEntitiesPath = 'compositeProfile.legalAgreement.attributes.crossMarginEntities';
         
@@ -403,14 +393,11 @@ class XMProfileFields extends Component {
             };
         }
 
-        // Ensure masterAgreements is a valid array
         const validAgreements = Array.isArray(masterAgreements) ? masterAgreements : [];
 
         if (validAgreements.length === 0) {
-            // If no agreements, maintain empty structure but preserve metadata
             crossMarginEntities.value = [];
         } else {
-            // Group agreements by entity identifier
             const groupedAgreements = {};
             validAgreements.forEach(agreement => {
                 const entityKey = `${agreement.eci || 'unknown'}_${agreement.legalEntityId || 'unknown'}`;
@@ -448,7 +435,6 @@ class XMProfileFields extends Component {
                 });
             });
 
-            // Rebuild the crossMarginEntities structure
             crossMarginEntities.value = Object.values(groupedAgreements).map(group => ({
                 counterParty: {
                     role: "COUNTERPARTY",
@@ -486,7 +472,6 @@ class XMProfileFields extends Component {
             }));
         }
 
-        // Update the crossMarginEntities with proper metadata preservation
         crossMarginEntities.source = 'USER';
         crossMarginEntities.sourceId = this.props.userInfo?.username || 'system';
 
@@ -504,13 +489,11 @@ class XMProfileFields extends Component {
 
     handleMasterAgreementUpdate = (agreementData) => {
         debounce.add(null, async () => {
-            // Handle updates to master agreement data with proper validation
             if (!agreementData || !agreementData.agreementId) {
                 return;
             }
 
             try {
-                // Validate the agreement data through API
                 const validationResult = await API.validateMasterAgreement(
                     agreementData, 
                     this.props.appState?.lob?.toUpperCase() || 'XM'
@@ -563,6 +546,8 @@ class XMProfileFields extends Component {
         try {
             const config = fetchConfig(this.props.appState?.lob || "xm");
             this.setup(config);
+            
+           
         } catch (error) {
             console.error('Failed to fetch config:', error);
             const fallbackConfig = {
@@ -583,7 +568,6 @@ class XMProfileFields extends Component {
             this.setup(fallbackConfig);
         }
         
-        // Initialize state tracking for form modifications
         this.setState({
             hasLocalChanges: false,
             lastUpdateTimestamp: null
@@ -595,7 +579,6 @@ class XMProfileFields extends Component {
             const newMasterAgreements = this.getCurrentMasterAgreements();
             const validNewAgreements = Array.isArray(newMasterAgreements) ? newMasterAgreements : [];
             
-            // Safely compare arrays by ensuring both are arrays
             const currentStateAgreements = Array.isArray(this.state.masterAgreements) ? this.state.masterAgreements : [];
             
             if (JSON.stringify(validNewAgreements) !== JSON.stringify(currentStateAgreements)) {
@@ -615,7 +598,6 @@ class XMProfileFields extends Component {
         let cloneData = cloneObject(this.props.data || {});
         this.initializeProfileData(cloneData);
 
-        // Process the complex crossMarginEntities data structure and flatten it
         this.processAndFlattenData(cloneData);
 
         let configSetupVar = configSetup({
@@ -633,14 +615,12 @@ class XMProfileFields extends Component {
     };
 
     processAndFlattenData = (data) => {
-        // Extract ECI and SPN from crossMarginEntities if available
         if (objectExists(data, 'compositeProfile.legalAgreement.attributes.crossMarginEntities.value')) {
             const crossMarginEntities = data.compositeProfile.legalAgreement.attributes.crossMarginEntities.value;
             
             if (crossMarginEntities.length > 0) {
                 const firstEntity = crossMarginEntities[0];
                 
-                // Extract counterParty information
                 if (firstEntity.counterParty) {
                     traverseObjectAndInsert({
                         obj: data,
@@ -657,10 +637,8 @@ class XMProfileFields extends Component {
                     });
                 }
 
-                // Process and flatten legal agreement profiles
                 const flattenedAgreements = this.processLegalAgreementProfiles(data);
-                
-                // Store flattened agreements in the proper metadata format
+         
                 traverseObjectAndInsert({
                     obj: data,
                     string: 'compositeProfile.legalAgreement.attributes.masterAgreements',
@@ -709,7 +687,6 @@ class XMProfileFields extends Component {
             data.compositeProfile.legalAgreement.version = data.compositeProfile.legalAgreement.version.toString();
         }
 
-        // Initialize masterAgreements with proper metadata structure if it doesn't exist
         if (!data.compositeProfile.legalAgreement.attributes.masterAgreements) {
             data.compositeProfile.legalAgreement.attributes.masterAgreements = {
                 source: 'USER',
@@ -729,22 +706,13 @@ class XMProfileFields extends Component {
 
         if (refKey === "masterAgreements") {
             api.addEventListener('selectionChanged', this.onSelectionChanged);
-            api.addEventListener('cellDoubleClicked', this.onCellDoubleClicked);
+            // Removed double-click edit functionality as requested
             
             const masterAgreements = this.getCurrentMasterAgreements();
             const validMasterAgreements = Array.isArray(masterAgreements) ? masterAgreements : [];
             if (validMasterAgreements.length > 0) {
                 api.setRowData([...validMasterAgreements]);
             }
-        }
-    };
-
-    onCellDoubleClicked = (event) => {
-        if (!this.state.permissions.readonly) {
-            const rowData = event.data;
-            this.setState({ selectedRows: [rowData] }, () => {
-                this.openMasterAgreementModal(true);
-            });
         }
     };
 
@@ -794,8 +762,56 @@ class XMProfileFields extends Component {
         });
     };
 
+    // New validation methods for SPN and ECID in agreement form
+    validateSpnOnBlur = () => {
+        this.validateStringFieldOnBlur(
+            'SPN', 
+            7, 
+            'SPN must be exactly 7 characters long.'
+        );
+    };
+
+    validateEcidOnBlur = () => {
+        this.validateStringFieldOnBlur(
+            'ECID', 
+            10, 
+            'ECID must be exactly 10 characters long.'
+        );
+    };
+
+    validateStringFieldOnBlur = (fieldTitle, requiredLength, errorMessage) => {
+        let clone = cloneObject(this.state.config);
+        let hasFieldChanges = false;
+        let updatedFieldBinding = null;
+        let updatedFieldValue = null;
+        
+        clone.layout.find(x => x.refKey === 'agreement').data.forEach(x => {
+            x.column.forEach(form => {
+                if (form.title === fieldTitle && form.value !== undefined) {
+                    if (form.value === "" || form.value === null || typeof form.value === "undefined") {
+                        return;
+                    }
+                    
+                    let currentValue = form.value.toString();
+                    if (currentValue.length !== requiredLength) {
+                        hasFieldChanges = true;
+                        updatedFieldBinding = form.bind;
+                        updatedFieldValue = currentValue;
+                        MessageBox.error('Validation Error', errorMessage, 500);
+                    }
+                }
+            });
+        });
+   
+        if (hasFieldChanges) {
+            this.setState({ config: clone, ready: false }, () => {
+                this.setState({ ready: true });
+            });
+        }
+    };
+
     validateEciOnBlur = async () => {
-        // Implementation for ECI validation
+        // TODO  
         console.log('ECI validation triggered');
     };
 
@@ -822,6 +838,8 @@ class XMProfileFields extends Component {
     validateFieldOnBlur = (fieldTitle, minValue, maxValue, minErrorMessage, maxErrorMessage) => {
         let clone = cloneObject(this.state.config);
         let hasFieldChanges = false;
+        let updatedFieldBinding = null;
+        let updatedFieldValue = null;
         
         clone.layout.find(x => x.refKey === 'crossMarginEntities').data.forEach(x => {
             x.column.forEach(form => {
@@ -835,27 +853,31 @@ class XMProfileFields extends Component {
                         newValue = minValue;
                         form.value = newValue;
                         hasFieldChanges = true;
+                        updatedFieldBinding = form.bind;
+                        updatedFieldValue = newValue;
                         MessageBox.error('Validation Error', minErrorMessage, 500);
                     } else if (newValue > maxValue) {
                         newValue = maxValue;
                         form.value = newValue;
                         hasFieldChanges = true;
+                        updatedFieldBinding = form.bind;
+                        updatedFieldValue = newValue;
                         MessageBox.error('Validation Error', maxErrorMessage, 500);
                     }
                 }
             });
         });
-        
-        // Only update state if there were actual field changes
+   
         if (hasFieldChanges) {
             this.setState({ config: clone, ready: false }, () => {
                 this.setState({ ready: true });
-                
-                // Update parent component state for validation changes
-                // without triggering master agreements reconstruction
-                if (this.props.onCustFormUpdate) {
+       
+                if (this.props.onCustFormUpdate && updatedFieldBinding && updatedFieldValue !== null) {
                     let formData = cloneObject(this.props.data || {});
                     this.initializeProfileData(formData);
+                    
+                    this.updateFieldInFormData(formData, updatedFieldBinding, updatedFieldValue, 'USER');
+                    
                     this.props.onCustFormUpdate(formData);
                 }
             });
@@ -881,20 +903,16 @@ class XMProfileFields extends Component {
     };
 
     handleFormDataUpdate = (updatedFormData, sectionRefKey = null) => {
-        // Reconstruct the complete form data with proper structure preservation
         let completeFormData = cloneObject(this.props.data || {});
         let hasStructuralChanges = false;
         
-        // Merge the updated form data while preserving the existing structure
         if (Array.isArray(updatedFormData)) {
             updatedFormData.forEach(section => {
                 if (section.column && Array.isArray(section.column)) {
                     section.column.forEach(field => {
                         if (field.bind && field.value !== undefined) {
-                            // Update the field value in the complete data structure
                             this.updateFieldInFormData(completeFormData, field.bind, field.value, field.source);
                             
-                            // Check if this field affects master agreements structure
                             if (this.isStructuralField(field.bind)) {
                                 hasStructuralChanges = true;
                             }
@@ -904,11 +922,8 @@ class XMProfileFields extends Component {
             });
         }
         
-        // Ensure proper data structure initialization
         this.initializeProfileData(completeFormData);
         
-        // Only trigger master agreements reconstruction if structural changes occurred
-        // This prevents unnecessary table refreshes for Cross Product Margin Calculation changes
         if (hasStructuralChanges && sectionRefKey !== 'crossMarginEntities') {
             const currentAgreements = this.getCurrentMasterAgreements();
             if (Array.isArray(currentAgreements) && currentAgreements.length > 0) {
@@ -916,12 +931,10 @@ class XMProfileFields extends Component {
             }
         }
         
-        // Trigger parent component update to ensure state persistence
         if (this.props.onCustFormUpdate) {
             this.props.onCustFormUpdate(completeFormData);
         }
-        
-        // Update local state to maintain consistency
+
         this.setState({ 
             hasLocalChanges: true,
             lastUpdateTimestamp: Date.now() 
@@ -929,24 +942,35 @@ class XMProfileFields extends Component {
     };
 
     isStructuralField = (fieldBinding) => {
-        // Define fields that affect master agreements structure
+    
         const structuralFields = [
             'compositeProfile.legalAgreement.attributes.eci',
             'compositeProfile.legalAgreement.attributes.spn',
             'compositeProfile.legalAgreement.attributes.counterPartyUcn',
             'compositeProfile.legalAgreement.attributes.legalEntityUcn',
-            'compositeProfile.legalAgreement.attributes.parentLegalEntityUcn'
+            'compositeProfile.legalAgreement.attributes.parentLegalEntityUcn',
+            'compositeProfile.legalAgreement.attributes.parties'
         ];
+       
+        const nonStructuralFields = [
+            'compositeProfile.legalAgreement.attributes.tier',
+            'compositeProfile.legalAgreement.attributes.tierVersion',
+            'compositeProfile.legalAgreement.attributes.tierEffectiveDate',
+            'compositeProfile.legalAgreement.attributes.houseMultiplier',
+            'compositeProfile.legalAgreement.attributes.addOn'
+        ];
+        
+        if (nonStructuralFields.some(field => fieldBinding.includes(field))) {
+            return false;
+        }
         
         return structuralFields.some(field => fieldBinding.includes(field));
     };
 
     updateFieldInFormData = (formData, fieldBinding, fieldValue, fieldSource = 'USER') => {
-        // Handle nested object path updates with proper metadata structure
         const pathParts = fieldBinding.split('.');
         let currentObject = formData;
         
-        // Navigate to the parent object
         for (let i = 0; i < pathParts.length - 1; i++) {
             if (!currentObject[pathParts[i]]) {
                 currentObject[pathParts[i]] = {};
@@ -956,8 +980,9 @@ class XMProfileFields extends Component {
         
         const finalKey = pathParts[pathParts.length - 1];
         
-        // Update with proper metadata structure when applicable
-        if (fieldSource && fieldSource !== 'SYSTEM') {
+        const requiresMetadata = this.shouldUseMetadataStructure(fieldBinding);
+        
+        if (requiresMetadata && fieldSource && fieldSource !== 'SYSTEM') {
             currentObject[finalKey] = {
                 source: fieldSource,
                 sourceId: this.props.userInfo?.username || 'system',
@@ -966,6 +991,22 @@ class XMProfileFields extends Component {
         } else {
             currentObject[finalKey] = fieldValue;
         }
+    };
+
+    shouldUseMetadataStructure = (fieldBinding) => {
+        const metadataFields = [
+            'compositeProfile.legalAgreement.attributes.tier',
+            'compositeProfile.legalAgreement.attributes.tierVersion',
+            'compositeProfile.legalAgreement.attributes.tierEffectiveDate',
+            'compositeProfile.legalAgreement.attributes.houseMultiplier',
+            'compositeProfile.legalAgreement.attributes.addOn',
+            'compositeProfile.legalAgreement.attributes.spn',
+            'compositeProfile.legalAgreement.attributes.eci',
+            'compositeProfile.legalAgreement.profileStatus',
+            'compositeProfile.legalAgreement.version'
+        ];
+        
+        return metadataFields.some(field => fieldBinding.includes(field));
     };
 
     render() {
@@ -1015,15 +1056,16 @@ class XMProfileFields extends Component {
                                         <FormBuilder
                                             data={data}
                                             onFormUpdate={(updatedData) => {
-                                                // Ensure both local and parent state are updated
+
                                                 if (onFormUpdate) {
                                                     onFormUpdate(updatedData);
                                                 }
                                                 
-                                                // Trigger section-specific state update with refKey context
                                                 this.handleFormDataUpdate(updatedData, refKey);
                                             }}
-                                            bindedEvents={bindedEvents}
+                                            bindedEvents={{
+                                                ...bindedEvents
+                                            }}
                                             permissions={permissions}
                                             staticData={staticData}
                                             renderComponent={(type, bind, containerIndex, formIndex) => {
