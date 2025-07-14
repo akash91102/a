@@ -53,7 +53,10 @@
                             "type": "input",
                             "required": true,
                             "min":"7",
-                            "max":"7"
+                            "max":"7",
+                            "events": {
+                                "onBlur": "VALIDATE_SPN_ON_BLUR"
+                            }
                         },
                         {
                             "title": "ECID",
@@ -61,7 +64,10 @@
                             "type": "input",
                             "required": true,
                             "min":"10",
-                            "max":"10"
+                            "max":"10",
+                            "events": {
+                                "onBlur": "VALIDATE_ECID_ON_BLUR"
+                            }
                         },
                         {
                             "title": "Counterparty",
@@ -157,6 +163,12 @@
                         "title": "Add",
                         "events": {
                             "onClick": "CREATE_NEW_MASTER_AGREEMENT"
+                        }
+                    },
+                    {
+                        "title": "Edit",
+                        "events": {
+                            "onClick": "EDIT_MASTER_AGREEMENT"
                         }
                     },
                     {
