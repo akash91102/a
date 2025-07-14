@@ -82,13 +82,13 @@ class XMProfileFields extends Component {
                 this.deleteSelectedRows();
             },
             VALIDATE_ECI_ON_BLUR: () => {
-                this.validateEciOnBlur();
+                this.validateEciOnBlur(); // Modal form ECI validation
             },
             VALIDATE_SPN_ON_BLUR: () => {
-                this.validateSpnOnBlur();
+                this.validateSpnOnBlur(); // Agreement form SPN validation  
             },
             VALIDATE_ECID_ON_BLUR: () => {
-                this.validateEcidOnBlur();
+                this.validateEcidOnBlur(); // Agreement form ECID validation
             },
             VALIDATE_TIER_ON_BLUR: () => {
                 this.validateTierOnBlur();
@@ -254,11 +254,12 @@ class XMProfileFields extends Component {
                             lineOfBusiness: newEntry.lineOfBusiness?.value || '',
                             agreementId: newEntry.agreementId?.value || '',
                             profileType: newEntry.agreementType?.value || '',
-                            legalEntityId: newEntry.legalEntityId?.value || '',
-                            legalEntity: newEntry.legalEntity?.value || ''
+                            lei: newEntry.legalEntityId?.value || '', // Updated to use 'lei' as per API requirements
+                            legalEntity: newEntry.legalEntity?.value || '',
+                            eci: newEntry.eci?.value || ''
                         };
 
-                        if (!validationData.agreementId || !validationData.lineOfBusiness || !validationData.legalEntityId) {
+                        if (!validationData.agreementId || !validationData.lineOfBusiness || !validationData.lei) {
                             MessageBox.error('Validation Error', 'Please fill in all required fields before saving.', 500);
                             this.setState({ resetTable: false });
                             return;
@@ -581,7 +582,8 @@ class XMProfileFields extends Component {
             
             const currentStateAgreements = Array.isArray(this.state.masterAgreements) ? this.state.masterAgreements : [];
             
-            if (JSON.stringify(validNewAgreements) !== JSON.stringify(currentStateAgreements)) {
+            // Only update if there are actual changes and we're not in the middle of a local operation
+            if (!this.state.hasLocalChanges && JSON.stringify(validNewAgreements) !== JSON.stringify(currentStateAgreements)) {
                 this.setState({
                     masterAgreements: [...validNewAgreements],
                     hasLocalChanges: false
@@ -756,27 +758,125 @@ class XMProfileFields extends Component {
             )
         );
 
+        // Set local changes flag to prevent componentDidUpdate from overriding our changes
+        this.setState({ hasLocalChanges: true });
+
         this.updateMasterAgreements(updatedAgreements, () => {
-            this.setState({ selectedRows: [] });
+            this.setState({ 
+                selectedRows: [],
+                hasLocalChanges: true // Maintain the flag after update
+            });
             this.rebuildCrossMarginEntities(updatedAgreements);
         });
     };
 
     // New validation methods for SPN and ECID in agreement form
-    validateSpnOnBlur = () => {
-        this.validateStringFieldOnBlur(
-            'SPN', 
-            7, 
-            'SPN must be exactly 7 characters long.'
-        );
+    validateSpnOnBlur = async () => {
+        const { config } = this.state;
+        if (!config) return;
+
+        let spnValue = null;
+        let updatedConfig = cloneObject(config);
+        let hasUpdated = false;
+
+        // Find SPN value in the agreement form
+        updatedConfig.layout.find(x => x.refKey === 'agreement').data.forEach(section => {
+            section.column.forEach(field => {
+                if (field.title === 'SPN' && field.value) {
+                    spnValue = field.value.toString().trim();
+                }
+            });
+        });
+
+        if (spnValue && spnValue.length === 7) {
+            try {
+                const validationResult = await API.validateEntityData(
+                    { spn: spnValue }, 
+                    this.props.appState?.lob?.toUpperCase() || 'XM'
+                );
+
+                if (validationResult.success && validationResult.payload && Array.isArray(validationResult.payload) && validationResult.payload.length > 0) {
+                    const entityData = validationResult.payload[0];
+                    
+                    // Update ECID field with API response
+                    updatedConfig.layout.find(x => x.refKey === 'agreement').data.forEach(section => {
+                        section.column.forEach(field => {
+                            if (field.title === 'ECID') {
+                                field.value = entityData.eci || '';
+                                hasUpdated = true;
+                            }
+                        });
+                    });
+
+                    if (hasUpdated) {
+                        this.setState({ config: updatedConfig }, () => {
+                            this.handleFormDataUpdate(updatedConfig.layout.find(x => x.refKey === 'agreement').data, 'agreement');
+                        });
+                    }
+                } else {
+                    MessageBox.error('Validation Error', 'Invalid SPN. No matching entity found.', 500);
+                }
+            } catch (error) {
+                console.warn('SPN validation failed:', error);
+                MessageBox.error('Validation Error', 'Unable to validate SPN. Please check the value and try again.', 500);
+            }
+        } else if (spnValue && spnValue.length !== 7) {
+            MessageBox.error('Validation Error', 'SPN must be exactly 7 characters long.', 500);
+        }
     };
 
-    validateEcidOnBlur = () => {
-        this.validateStringFieldOnBlur(
-            'ECID', 
-            10, 
-            'ECID must be exactly 10 characters long.'
-        );
+    validateEcidOnBlur = async () => {
+        const { config } = this.state;
+        if (!config) return;
+
+        let ecidValue = null;
+        let updatedConfig = cloneObject(config);
+        let hasUpdated = false;
+
+        // Find ECID value in the agreement form
+        updatedConfig.layout.find(x => x.refKey === 'agreement').data.forEach(section => {
+            section.column.forEach(field => {
+                if (field.title === 'ECID' && field.value) {
+                    ecidValue = field.value.toString().trim();
+                }
+            });
+        });
+
+        if (ecidValue && ecidValue.length === 10) {
+            try {
+                const validationResult = await API.validateEntityData(
+                    { eci: ecidValue }, 
+                    this.props.appState?.lob?.toUpperCase() || 'XM'
+                );
+
+                if (validationResult.success && validationResult.payload && Array.isArray(validationResult.payload) && validationResult.payload.length > 0) {
+                    const entityData = validationResult.payload[0];
+                    
+                    // Update SPN field with API response
+                    updatedConfig.layout.find(x => x.refKey === 'agreement').data.forEach(section => {
+                        section.column.forEach(field => {
+                            if (field.title === 'SPN') {
+                                field.value = entityData.spn || '';
+                                hasUpdated = true;
+                            }
+                        });
+                    });
+
+                    if (hasUpdated) {
+                        this.setState({ config: updatedConfig }, () => {
+                            this.handleFormDataUpdate(updatedConfig.layout.find(x => x.refKey === 'agreement').data, 'agreement');
+                        });
+                    }
+                } else {
+                    MessageBox.error('Validation Error', 'Invalid ECID. No matching entity found.', 500);
+                }
+            } catch (error) {
+                console.warn('ECID validation failed:', error);
+                MessageBox.error('Validation Error', 'Unable to validate ECID. Please check the value and try again.', 500);
+            }
+        } else if (ecidValue && ecidValue.length !== 10) {
+            MessageBox.error('Validation Error', 'ECID must be exactly 10 characters long.', 500);
+        }
     };
 
     validateStringFieldOnBlur = (fieldTitle, requiredLength, errorMessage) => {
@@ -811,8 +911,71 @@ class XMProfileFields extends Component {
     };
 
     validateEciOnBlur = async () => {
-        // TODO  
-        console.log('ECI validation triggered');
+        const { config } = this.state;
+        if (!config) return;
+
+        let eciValue = null;
+        let updatedConfig = cloneObject(config);
+        let hasUpdated = false;
+
+        // Find the ECI field in the modal form data
+        if (this.state.modal.formdata && this.state.modal.formdata.data) {
+            this.state.modal.formdata.data.forEach(section => {
+                if (section.column) {
+                    section.column.forEach(field => {
+                        if (field.bind === 'eci' && field.value) {
+                            eciValue = field.value.toString().trim();
+                        }
+                    });
+                }
+            });
+        }
+
+        if (eciValue && eciValue.length > 0) {
+            try {
+                const validationResult = await API.validateEntityData(
+                    { eci: eciValue }, 
+                    this.props.appState?.lob?.toUpperCase() || 'XM'
+                );
+
+                if (validationResult.success && validationResult.payload && Array.isArray(validationResult.payload) && validationResult.payload.length > 0) {
+                    const entityData = validationResult.payload[0];
+                    
+                    // Update modal form data with API response
+                    let updatedFormData = cloneObject(this.state.modal.formdata);
+                    updatedFormData.data.forEach(section => {
+                        if (section.column) {
+                            section.column.forEach(field => {
+                                switch (field.bind) {
+                                    case 'legalEntityId':
+                                        field.value = entityData.lei || entityData.ucn || '';
+                                        hasUpdated = true;
+                                        break;
+                                    case 'legalEntity':
+                                        field.value = entityData.name || '';
+                                        hasUpdated = true;
+                                        break;
+                                }
+                            });
+                        }
+                    });
+
+                    if (hasUpdated) {
+                        this.setState({
+                            modal: {
+                                ...this.state.modal,
+                                formdata: updatedFormData
+                            }
+                        });
+                    }
+                } else {
+                    MessageBox.error('Validation Error', 'Invalid ECID. No matching entity found.', 500);
+                }
+            } catch (error) {
+                console.warn('ECI validation failed:', error);
+                MessageBox.error('Validation Error', 'Unable to validate ECID. Please check the value and try again.', 500);
+            }
+        }
     };
 
     validateHouseMultiplierOnBlur = () => {
